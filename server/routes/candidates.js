@@ -50,48 +50,53 @@ router.get('/', requireAuth, (req, res) => {
 
 // POST /api/candidates
 router.post('/', requireAuth, (req, res) => {
-  const {
-    first_name, last_name, phone, email, office, status,
-    recruiter, lead_source, job_applied_for, position_interest, notes,
-    days_available, shift_preference, wage_expectation, prior_experience,
-    application_date, inperson_datetime, candidate_confirmed, onboarding_complete
-  } = req.body
+  try {
+    const {
+      first_name, last_name, phone, email, office, status,
+      recruiter, lead_source, job_applied_for, position_interest, notes,
+      days_available, shift_preference, wage_expectation, prior_experience,
+      application_date, inperson_datetime, candidate_confirmed, onboarding_complete
+    } = req.body
 
-  if (!first_name || !last_name) {
-    return res.status(400).json({ error: 'First and last name required' })
-  }
-
-  // Duplicate phone check
-  if (phone) {
-    const cleanPhone = phone.replace(/\D/g, '')
-    const existing = db.prepare('SELECT id FROM candidates WHERE replace(replace(replace(replace(phone,"-",""),"(",""),")","")," ","") = ?').get(cleanPhone)
-    if (existing) {
-      return res.status(409).json({ error: 'Candidate with this phone already exists', id: existing.id })
+    if (!first_name || !last_name) {
+      return res.status(400).json({ error: 'First and last name required' })
     }
+
+    // Duplicate phone check
+    if (phone) {
+      const cleanPhone = phone.replace(/\D/g, '')
+      const existing = db.prepare("SELECT id FROM candidates WHERE replace(replace(replace(replace(phone,'-',''),'(',''),')',''),' ','') = ?").get(cleanPhone)
+      if (existing) {
+        return res.status(409).json({ error: 'Candidate with this phone already exists', id: existing.id })
+      }
+    }
+
+    const today = new Date().toISOString().split('T')[0]
+    const result = db.prepare(`
+      INSERT INTO candidates (first_name, last_name, phone, email, office, status, recruiter, lead_source,
+        job_applied_for, position_interest, notes, days_available, shift_preference, wage_expectation, prior_experience,
+        application_date, inperson_datetime, candidate_confirmed, onboarding_complete)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      first_name, last_name, phone || '', email || '',
+      office || '1511', status || 'New', recruiter || '',
+      lead_source || '', job_applied_for || '', position_interest || '', notes || '',
+      days_available || '', shift_preference || '', wage_expectation || '', prior_experience || '',
+      application_date || today, inperson_datetime || null,
+      candidate_confirmed ? 1 : 0, onboarding_complete ? 1 : 0
+    )
+
+    const candidate = db.prepare('SELECT * FROM candidates WHERE id = ?').get(result.lastInsertRowid)
+
+    // Log activity
+    db.prepare('INSERT INTO activity_log (candidate_id, user, action, detail) VALUES (?, ?, ?, ?)')
+      .run(candidate.id, req.session.user.username, 'created', `Candidate added by ${req.session.user.display_name}`)
+
+    res.status(201).json(candidate)
+  } catch (err) {
+    console.error('POST /candidates error:', err)
+    res.status(500).json({ error: err.message })
   }
-
-  const today = new Date().toISOString().split('T')[0]
-  const result = db.prepare(`
-    INSERT INTO candidates (first_name, last_name, phone, email, office, status, recruiter, lead_source,
-      job_applied_for, position_interest, notes, days_available, shift_preference, wage_expectation, prior_experience,
-      application_date, inperson_datetime, candidate_confirmed, onboarding_complete)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    first_name, last_name, phone || '', email || '',
-    office || '1511', status || 'New', recruiter || '',
-    lead_source || '', job_applied_for || '', position_interest || '', notes || '',
-    days_available || '', shift_preference || '', wage_expectation || '', prior_experience || '',
-    application_date || today, inperson_datetime || null,
-    candidate_confirmed ? 1 : 0, onboarding_complete ? 1 : 0
-  )
-
-  const candidate = db.prepare('SELECT * FROM candidates WHERE id = ?').get(result.lastInsertRowid)
-
-  // Log activity
-  db.prepare('INSERT INTO activity_log (candidate_id, user, action, detail) VALUES (?, ?, ?, ?)')
-    .run(candidate.id, req.session.user.username, 'created', `Candidate added by ${req.session.user.display_name}`)
-
-  res.status(201).json(candidate)
 })
 
 // GET /api/candidates/:id
@@ -111,7 +116,8 @@ router.patch('/:id', requireAuth, (req, res) => {
     'lead_source', 'job_applied_for', 'position_interest', 'days_available', 'shift_preference',
     'wage_expectation', 'prior_experience', 'closed_reason', 'is_active', 'arrival_status',
     'arrival_date', 'application_date', 'first_contact_date', 'last_contacted_date',
-    'inperson_datetime', 'candidate_confirmed', 'onboarding_complete', 'placed_date', 'lmvm_count'
+    'inperson_datetime', 'candidate_confirmed', 'onboarding_complete', 'placed_date', 'lmvm_count',
+    'incentive_type'
   ]
 
   const updates = {}
@@ -157,6 +163,21 @@ router.patch('/:id', requireAuth, (req, res) => {
   const values = [...Object.values(updates), req.params.id]
 
   db.prepare(`UPDATE candidates SET ${setClauses} WHERE id = ?`).run(...values)
+
+  // Clear alert dismissals based on what changed so alerts re-fire after action is taken
+  if (updates.status && updates.status !== candidate.status) {
+    // Any status change clears all alerts for this candidate
+    db.prepare('DELETE FROM alert_dismissals WHERE candidate_id = ?').run(req.params.id)
+  } else {
+    const toClear = []
+    if (updates.last_contacted_date || updates.lmvm_count) toClear.push('lmvm_followup', 'lmvm_max', 'stuck_lmvm')
+    if (updates.candidate_confirmed) toClear.push('confirm_today')
+    if (updates.onboarding_complete) toClear.push('onboarding_check')
+    if (toClear.length) {
+      db.prepare(`DELETE FROM alert_dismissals WHERE candidate_id = ? AND alert_type IN (${toClear.map(() => '?').join(',')})`)
+        .run(req.params.id, ...toClear)
+    }
+  }
 
   const updated = db.prepare('SELECT * FROM candidates WHERE id = ?').get(req.params.id)
   res.json(updated)

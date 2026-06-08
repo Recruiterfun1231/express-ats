@@ -40,6 +40,7 @@ export const api = {
     return request(`/dashboard/stats${q ? '?' + q : ''}`)
   },
   getAlerts: () => request('/dashboard/alerts'),
+  dismissAlert: (candidate_id, alert_type) => request('/dashboard/alerts/dismiss', { method: 'POST', body: JSON.stringify({ candidate_id, alert_type }) }),
 
   // Arrival
   getArrival: (params = {}) => {
@@ -50,7 +51,13 @@ export const api = {
     method: 'POST',
     credentials: 'include',
     body: formData
-  }).then(r => r.json()),
+  }).then(async r => {
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({ error: r.statusText }))
+      throw Object.assign(new Error(err.error || 'Request failed'), { status: r.status })
+    }
+    return r.json()
+  }),
   confirmArrivals: (arrivals) => request('/arrival/confirm', { method: 'POST', body: JSON.stringify({ arrivals }) }),
 
   // Import
@@ -58,7 +65,13 @@ export const api = {
     method: 'POST',
     credentials: 'include',
     body: formData
-  }).then(r => r.json()),
+  }).then(async r => {
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({ error: r.statusText }))
+      throw Object.assign(new Error(err.error || 'Import failed'), { status: r.status })
+    }
+    return r.json()
+  }),
   confirmImport: (records) => request('/import/confirm', { method: 'POST', body: JSON.stringify({ records }) }),
 }
 

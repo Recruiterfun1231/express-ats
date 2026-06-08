@@ -40,6 +40,12 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() })
 })
 
+// Global JSON error handler — catches unhandled throws in routes
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err)
+  res.status(err.status || 500).json({ error: err.message || 'Internal server error' })
+})
+
 // Serve static files in production
 if (process.env.NODE_ENV === 'production') {
   app.use(express.static(path.join(__dirname, '../client/dist')))

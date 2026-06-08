@@ -87,6 +87,25 @@ if (userCount.cnt === 0) {
   console.log('Seeded 7 users')
 }
 
+// Alert dismissals table
+db.exec(`
+  CREATE TABLE IF NOT EXISTS alert_dismissals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    candidate_id INTEGER NOT NULL,
+    alert_type TEXT NOT NULL,
+    dismissed_by TEXT,
+    dismissed_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(candidate_id, alert_type)
+  )
+`)
+
+// Migrate: add incentive_type column if missing
+const candidateCols = db.prepare("PRAGMA table_info(candidates)").all()
+if (!candidateCols.find(c => c.name === 'incentive_type')) {
+  db.exec("ALTER TABLE candidates ADD COLUMN incentive_type TEXT DEFAULT NULL")
+  console.log('Migrated: added incentive_type column')
+}
+
 // Seed assignment counters if not present
 const c1511 = db.prepare("SELECT * FROM assignment_counters WHERE office_group = '1511'").get()
 if (!c1511) {

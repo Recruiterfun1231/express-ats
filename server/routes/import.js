@@ -95,10 +95,16 @@ router.post('/csv', requireManager, upload.single('file'), (req, res) => {
 
   let records
   try {
-    records = parse(req.file.buffer.toString('utf8'), {
+    // Strip UTF-8 BOM (common in Microsoft exports)
+    let content = req.file.buffer.toString('utf8').replace(/^﻿/, '')
+    // Auto-detect tab-separated (TSV from MS Lists/Excel) vs comma-separated
+    const firstLine = content.split('\n')[0] || ''
+    const delimiter = firstLine.includes('\t') ? '\t' : ','
+    records = parse(content, {
       columns: true,
       skip_empty_lines: true,
-      trim: true
+      trim: true,
+      delimiter
     })
   } catch (err) {
     return res.status(400).json({ error: 'Failed to parse CSV: ' + err.message })
@@ -159,7 +165,7 @@ router.post('/csv', requireManager, upload.single('file'), (req, res) => {
       first_contact_date: parseDate(get('first contact date')),
       last_contacted_date: parseDate(get('last contacted date')),
       inperson_datetime: parseDateTime(get('in-person date & time', 'in-person date', 'inperson date')),
-      candidate_confirmed: get('candidate confirmed?', 'candidate confirmed').toLowerCase().includes('yes') ? 1 : 0,
+      candidate_confirmed: /^(yes|true)$/i.test(get('candidate confirmed?', 'candidate confirmed').trim()) ? 1 : 0,
       notes: get('notes')
     }
   })
@@ -169,7 +175,7 @@ router.post('/csv', requireManager, upload.single('file'), (req, res) => {
   const previewWithFlags = preview.map(r => {
     let duplicate = null
     if (r.phone) {
-      const existing = db.prepare('SELECT id, first_name, last_name FROM candidates WHERE replace(replace(replace(replace(phone,"-",""),"(",""),")","")," ","") = ?').get(r.phone)
+      const existing = db.prepare("SELECT id, first_name, last_name FROM candidates WHERE replace(replace(replace(replace(phone,'-',''),'(',''),')',''),' ','') = ?").get(r.phone)
       if (existing) duplicate = existing
     }
     return { ...r, _duplicate: duplicate }
@@ -200,7 +206,7 @@ router.post('/confirm', requireManager, (req, res) => {
     for (const r of rows) {
       if (!r.first_name && !r.last_name) { skipped++; continue }
       if (r.phone) {
-        const existing = db.prepare('SELECT id FROM candidates WHERE replace(replace(replace(replace(phone,"-",""),"(",""),")","")," ","") = ?').get(r.phone)
+        const existing = db.prepare("SELECT id FROM candidates WHERE replace(replace(replace(replace(phone,'-',''),'(',''),')',''),' ','') = ?").get(r.phone)
         if (existing) { skipped++; continue }
       }
       try {

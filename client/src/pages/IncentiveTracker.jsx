@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { Gift, DollarSign, RefreshCw, CheckCircle } from 'lucide-react'
+import { Gift, DollarSign, RefreshCw, CheckCircle, Star } from 'lucide-react'
 import { format } from 'date-fns'
 import api from '../api'
 import { useAuth, useToast } from '../App'
@@ -11,6 +11,7 @@ export default function IncentiveTracker() {
   const [loading, setLoading] = useState(true)
   const [filterRecruiter, setFilterRecruiter] = useState(user?.role === 'recruiter' ? user.username : '')
   const [filterOffice, setFilterOffice] = useState('')
+  const [saving, setSaving] = useState(null) // candidate id being saved
 
   useEffect(() => { loadCandidates() }, [filterRecruiter, filterOffice])
 
@@ -28,7 +29,6 @@ export default function IncentiveTracker() {
     setLoading(false)
   }
 
-  // Spec: $1 incentive if placed_date is within 7 calendar days of inperson_datetime (Kept date)
   const daysBetween = (d1, d2) => {
     if (!d1 || !d2) return null
     return Math.abs(Math.floor((new Date(d1) - new Date(d2)) / (1000 * 60 * 60 * 24)))
@@ -37,23 +37,61 @@ export default function IncentiveTracker() {
   const getInvoiceFriday = (placedDate) => {
     if (!placedDate) return null
     const d = new Date(placedDate)
-    const day = d.getDay() // 0=Sun, 5=Fri
+    const day = d.getDay()
     const daysToFriday = (5 - day + 7) % 7
     d.setDate(d.getDate() + daysToFriday)
     return d
   }
 
-  const qualifies = (c) => {
+  // Auto-detect $1: Placed AND placed_date within 7 days of kept date
+  const autoQualifies1 = (c) => {
     if (c.status !== 'Placed') return false
     if (!c.placed_date || !c.inperson_datetime) return false
     const days = daysBetween(c.placed_date, c.inperson_datetime)
     return days !== null && days <= 7
   }
 
-  const placed = candidates.filter(c => c.status === 'Placed')
-  const qualified = placed.filter(qualifies)
+  // Effective incentive type for a candidate:
+  // incentive_type field overrides auto-detection
+  // null = use auto-detection
+  const getIncentiveType = (c) => {
+    if (c.status !== 'Placed') return null
+    if (c.incentive_type === '$1') return '$1'
+    if (c.incentive_type === '$2') return '$2'
+    if (c.incentive_type === 'none') return null
+    // Auto-detect if no override
+    if (autoQualifies1(c)) return '$1'
+    return null
+  }
 
-  // Group placed by recruiter (show all placed, mark qualifying)
+  const setIncentiveType = async (candidate, type) => {
+    // Toggle off if clicking the active type
+    const current = getIncentiveType(candidate)
+    const newType = current === type ? null : type
+
+    // Determine what to store: null means revert to auto-detection
+    let storedValue = newType
+    // If reverting to null but auto-detects as $1, store 'none' to explicitly clear
+    if (newType === null && autoQualifies1(candidate)) {
+      storedValue = 'none'
+    }
+
+    setSaving(candidate.id)
+    try {
+      const updated = await api.updateCandidate(candidate.id, { incentive_type: storedValue })
+      setCandidates(prev => prev.map(c => c.id === candidate.id ? updated : c))
+    } catch (e) {
+      addToast(e.message, 'error')
+    }
+    setSaving(null)
+  }
+
+  const placed = candidates.filter(c => c.status === 'Placed')
+  const dollar1 = placed.filter(c => getIncentiveType(c) === '$1')
+  const dollar2 = placed.filter(c => getIncentiveType(c) === '$2')
+  const totalIncentive = dollar1.length * 1 + dollar2.length * 2
+
+  // Recruiter breakdown
   const byRecruiter = placed.reduce((acc, c) => {
     const key = c.recruiter || 'Unassigned'
     if (!acc[key]) acc[key] = []
@@ -61,7 +99,7 @@ export default function IncentiveTracker() {
     return acc
   }, {})
 
-  const totalIncentive = qualified.length // only placed within 7 days of kept
+  const isManager = user?.role === 'manager'
 
   return (
     <div className="p-5 max-w-5xl mx-auto space-y-5">
@@ -70,7 +108,7 @@ export default function IncentiveTracker() {
         <Gift size={22} className="text-yellow-600" />
         <h1 className="font-bold text-gray-900 text-xl flex-1">Incentive Tracker</h1>
 
-        {user?.role === 'manager' && (
+        {isManager && (
           <select value={filterRecruiter} onChange={e => setFilterRecruiter(e.target.value)}
             className="text-sm border border-gray-300 rounded-lg px-2.5 py-1.5">
             <option value="">All Recruiters</option>
@@ -92,42 +130,50 @@ export default function IncentiveTracker() {
       {/* Summary Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
-          <div className="text-sm text-gray-500">Total Qualified</div>
-          <div className="text-3xl font-bold text-yellow-600 mt-1">{qualified.length}</div>
-          <div className="text-xs text-gray-400 mt-0.5">Kept + Placed</div>
+          <div className="text-sm text-gray-500">$1 Kept → Placed</div>
+          <div className="text-3xl font-bold text-yellow-600 mt-1">{dollar1.length}</div>
+          <div className="text-xs text-gray-400 mt-0.5">${dollar1.length} total</div>
+        </div>
+        <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
+          <div className="text-sm text-gray-500">$2 Good Hunter</div>
+          <div className="text-3xl font-bold text-purple-600 mt-1">{dollar2.length}</div>
+          <div className="text-xs text-gray-400 mt-0.5">${dollar2.length * 2} total</div>
         </div>
         <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
           <div className="text-sm text-gray-500">Total Incentive</div>
           <div className="text-3xl font-bold text-green-600 mt-1">${totalIncentive}</div>
-          <div className="text-xs text-gray-400 mt-0.5">$1 per placement</div>
+          <div className="text-xs text-gray-400 mt-0.5">{dollar1.length + dollar2.length} qualifying</div>
         </div>
         <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
-          <div className="text-sm text-gray-500">Kept</div>
-          <div className="text-3xl font-bold text-yellow-500 mt-1">
-            {candidates.filter(c => c.status === 'Kept').length}
-          </div>
-        </div>
-        <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
-          <div className="text-sm text-gray-500">Placed</div>
-          <div className="text-3xl font-bold text-green-500 mt-1">
-            {candidates.filter(c => c.status === 'Placed').length}
-          </div>
+          <div className="text-sm text-gray-500">Total Placed</div>
+          <div className="text-3xl font-bold text-green-500 mt-1">{placed.length}</div>
+          <div className="text-xs text-gray-400 mt-0.5">all statuses</div>
         </div>
       </div>
 
-      {/* Incentive Rule Callout */}
-      <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4 flex items-start gap-3">
-        <DollarSign size={18} className="text-yellow-600 mt-0.5 flex-shrink-0" />
-        <div>
-          <div className="font-semibold text-yellow-800 text-sm">Incentive Rule</div>
-          <div className="text-yellow-700 text-sm mt-0.5">
-            $1 incentive per placement where <strong>placed_date</strong> is within <strong>7 calendar days</strong> of the in-person (Kept) date. Invoice week = Friday on or after placed_date.
-          </div>
+      {/* Incentive Rules Callout */}
+      <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4 space-y-2">
+        <div className="flex items-center gap-2">
+          <DollarSign size={16} className="text-yellow-600 flex-shrink-0" />
+          <span className="font-semibold text-yellow-800 text-sm">$1 — Kept-to-Placement</span>
         </div>
+        <p className="text-yellow-700 text-sm ml-5">
+          Applicant was <strong>Kept</strong> and then <strong>Placed within 7 calendar days</strong> of their in-person date — either tagged Placed manually or confirmed Green on the arrival list.
+        </p>
+        <div className="flex items-center gap-2 mt-1">
+          <Star size={16} className="text-purple-600 flex-shrink-0" />
+          <span className="font-semibold text-purple-800 text-sm">$2 — Good Hunter</span>
+        </div>
+        <p className="text-yellow-700 text-sm ml-5">
+          Recruiter maintained their pipeline and proactively got an applicant placed. Manually assigned by manager.
+        </p>
+        {isManager && (
+          <p className="text-xs text-yellow-600 ml-5">Use the <strong>$1</strong> / <strong>$2</strong> buttons in the table below to assign or override incentive type.</p>
+        )}
       </div>
 
-      {/* By Recruiter breakdown */}
-      {user?.role === 'manager' && Object.keys(byRecruiter).length > 0 && (
+      {/* Recruiter Breakdown (manager only) */}
+      {isManager && Object.keys(byRecruiter).length > 0 && (
         <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
           <div className="px-5 py-4 border-b border-gray-100">
             <h2 className="font-semibold text-gray-800">Recruiter Breakdown</h2>
@@ -135,73 +181,112 @@ export default function IncentiveTracker() {
           <table className="w-full text-sm">
             <thead className="bg-gray-50">
               <tr>
-                {['Recruiter','Total Placed','Qualifying (≤7 days)','Incentive $'].map(h => (
+                {['Recruiter', 'Total Placed', '$1 Kept→Placed', '$2 Good Hunter', 'Total Incentive'].map(h => (
                   <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {Object.entries(byRecruiter).sort((a,b) => b[1].length - a[1].length).map(([recruiter, list]) => (
-                <tr key={recruiter} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 font-medium text-gray-800 capitalize">{recruiter}</td>
-                  <td className="px-4 py-3 text-green-600">{list.length}</td>
-                  <td className="px-4 py-3 font-semibold">{list.filter(qualifies).length}</td>
-                  <td className="px-4 py-3 font-bold text-green-700">${list.filter(qualifies).length}</td>
-                </tr>
-              ))}
+              {Object.entries(byRecruiter).sort((a,b) => b[1].length - a[1].length).map(([recruiter, list]) => {
+                const r1 = list.filter(c => getIncentiveType(c) === '$1').length
+                const r2 = list.filter(c => getIncentiveType(c) === '$2').length
+                return (
+                  <tr key={recruiter} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 font-medium text-gray-800 capitalize">{recruiter}</td>
+                    <td className="px-4 py-3 text-green-600">{list.length}</td>
+                    <td className="px-4 py-3 font-semibold text-yellow-700">{r1}</td>
+                    <td className="px-4 py-3 font-semibold text-purple-700">{r2}</td>
+                    <td className="px-4 py-3 font-bold text-green-700">${r1 * 1 + r2 * 2}</td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
       )}
 
-      {/* Qualified Candidates Table */}
+      {/* Placed Candidates Table */}
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-        <div className="px-5 py-4 border-b border-gray-100">
-          <h2 className="font-semibold text-gray-800">Qualifying Candidates ({qualified.length})</h2>
+        <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between">
+          <h2 className="font-semibold text-gray-800">Placed Candidates ({placed.length})</h2>
+          {isManager && (
+            <span className="text-xs text-gray-400">Click <strong>$1</strong> or <strong>$2</strong> to assign — click again to remove</span>
+          )}
         </div>
 
         {loading ? (
           <div className="py-12 text-center text-gray-400">Loading...</div>
-        ) : qualified.length === 0 ? (
-          <div className="py-12 text-center text-gray-400">No qualifying candidates yet</div>
+        ) : placed.length === 0 ? (
+          <div className="py-12 text-center text-gray-400">No placed candidates yet</div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-gray-50">
                 <tr>
-                  {['Candidate','Recruiter','Office','Kept Date','Placed Date','Days','Qualifies ($1)?','Invoice Week'].map(h => (
-                    <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">{h}</th>
+                  {['Candidate', 'Recruiter', 'Office', 'Kept Date', 'Placed Date', 'Days', 'Auto $1?', 'Incentive', 'Invoice Week'].map(h => (
+                    <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {placed.map(c => {
-                  const q = qualifies(c)
+                  const incentiveType = getIncentiveType(c)
                   const days = daysBetween(c.placed_date, c.inperson_datetime)
                   const friday = getInvoiceFriday(c.placed_date)
+                  const isSaving = saving === c.id
                   return (
-                  <tr key={c.id} className={`hover:bg-gray-50 ${q ? '' : 'opacity-60'}`}>
-                    <td className="px-4 py-3 font-medium text-gray-900">{c.first_name} {c.last_name}</td>
-                    <td className="px-4 py-3 text-gray-600 capitalize">{c.recruiter}</td>
-                    <td className="px-4 py-3 text-gray-600 text-xs">{c.office}</td>
-                    <td className="px-4 py-3 text-gray-500 text-xs">
-                      {c.inperson_datetime ? format(new Date(c.inperson_datetime), 'MMM d, yyyy') : '—'}
-                    </td>
-                    <td className="px-4 py-3 text-gray-500 text-xs">
-                      {c.placed_date ? format(new Date(c.placed_date), 'MMM d, yyyy') : '—'}
-                    </td>
-                    <td className="px-4 py-3 text-center text-xs">{days !== null ? days : '—'}</td>
-                    <td className="px-4 py-3">
-                      {q
-                        ? <span className="flex items-center gap-1 text-green-700 font-bold"><CheckCircle size={13} /> ✓ $1</span>
-                        : <span className="text-gray-400 text-xs">✗</span>}
-                    </td>
-                    <td className="px-4 py-3 text-xs text-gray-500">
-                      {friday ? format(friday, 'MMM d, yyyy') : '—'}
-                    </td>
-                  </tr>
-                )})}
-
+                    <tr key={c.id} className={`hover:bg-gray-50 ${incentiveType ? '' : 'opacity-60'}`}>
+                      <td className="px-4 py-3 font-medium text-gray-900 whitespace-nowrap">{c.first_name} {c.last_name}</td>
+                      <td className="px-4 py-3 text-gray-600 capitalize">{c.recruiter}</td>
+                      <td className="px-4 py-3 text-gray-600 text-xs">{c.office}</td>
+                      <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">
+                        {c.inperson_datetime ? format(new Date(c.inperson_datetime), 'MMM d, yyyy') : '—'}
+                      </td>
+                      <td className="px-4 py-3 text-gray-500 text-xs whitespace-nowrap">
+                        {c.placed_date ? format(new Date(c.placed_date), 'MMM d, yyyy') : '—'}
+                      </td>
+                      <td className="px-4 py-3 text-center text-xs">{days !== null ? days : '—'}</td>
+                      <td className="px-4 py-3">
+                        {autoQualifies1(c)
+                          ? <span className="flex items-center gap-1 text-yellow-600 text-xs font-medium"><CheckCircle size={12} /> Yes</span>
+                          : <span className="text-gray-400 text-xs">No</span>}
+                      </td>
+                      <td className="px-4 py-3">
+                        {isManager ? (
+                          <div className="flex items-center gap-1">
+                            <button
+                              disabled={isSaving}
+                              onClick={() => setIncentiveType(c, '$1')}
+                              className={`px-2.5 py-1 rounded text-xs font-semibold transition-colors disabled:opacity-50 ${
+                                incentiveType === '$1'
+                                  ? 'bg-yellow-500 text-white'
+                                  : 'bg-gray-100 text-gray-600 hover:bg-yellow-100 hover:text-yellow-700'
+                              }`}
+                            >$1</button>
+                            <button
+                              disabled={isSaving}
+                              onClick={() => setIncentiveType(c, '$2')}
+                              className={`px-2.5 py-1 rounded text-xs font-semibold transition-colors disabled:opacity-50 ${
+                                incentiveType === '$2'
+                                  ? 'bg-purple-500 text-white'
+                                  : 'bg-gray-100 text-gray-600 hover:bg-purple-100 hover:text-purple-700'
+                              }`}
+                            >$2</button>
+                          </div>
+                        ) : (
+                          incentiveType === '$1'
+                            ? <span className="inline-flex items-center gap-1 text-yellow-700 font-bold text-xs"><CheckCircle size={12} /> $1</span>
+                            : incentiveType === '$2'
+                              ? <span className="inline-flex items-center gap-1 text-purple-700 font-bold text-xs"><Star size={12} /> $2</span>
+                              : <span className="text-gray-400 text-xs">—</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-xs text-gray-500 whitespace-nowrap">
+                        {friday ? format(friday, 'MMM d, yyyy') : '—'}
+                      </td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
