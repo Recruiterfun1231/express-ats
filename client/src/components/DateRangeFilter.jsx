@@ -89,7 +89,10 @@ export function matchesDateBounds(bounds, ...dateStrings) {
   if (!bounds) return true   // no filter = show everything
   return dateStrings.some(d => {
     if (!d) return false
-    const dt = new Date(d)
+    // Date-only strings like "2026-06-09" are parsed as UTC midnight by JS,
+    // which shifts them to the previous day in US timezones.
+    // Treat them as local midnight instead to avoid off-by-one errors.
+    const dt = /^\d{4}-\d{2}-\d{2}$/.test(d) ? new Date(d + 'T00:00:00') : new Date(d)
     return dt >= bounds.start && dt <= bounds.end
   })
 }
