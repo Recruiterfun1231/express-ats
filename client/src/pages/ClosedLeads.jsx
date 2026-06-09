@@ -4,6 +4,7 @@ import { format } from 'date-fns'
 import api from '../api'
 import { useAuth, useToast } from '../App'
 import CandidateModal from '../components/CandidateModal'
+import DateRangeFilter, { getDateBounds, matchesDateBounds } from '../components/DateRangeFilter'
 
 export default function ClosedLeads() {
   const { user } = useAuth()
@@ -15,6 +16,11 @@ export default function ClosedLeads() {
   const [filterOffice, setFilterOffice] = useState('')
   const [reactivating, setReactivating] = useState(null)
   const [selected, setSelected] = useState(null)
+
+  // Date filter
+  const [dateRange, setDateRange] = useState('')
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
 
   useEffect(() => { loadClosed() }, [filterRecruiter, filterOffice])
 
@@ -44,20 +50,33 @@ export default function ClosedLeads() {
     setReactivating(null)
   }
 
+  const dateBounds = (dateRange === 'custom' && (!startDate || !endDate))
+    ? null
+    : getDateBounds(dateRange, startDate, endDate)
+
   const filtered = candidates.filter(c => {
-    if (!search) return true
-    const q = search.toLowerCase()
-    return (
-      c.first_name?.toLowerCase().includes(q) ||
-      c.last_name?.toLowerCase().includes(q) ||
-      c.phone?.includes(q) ||
-      c.closed_reason?.toLowerCase().includes(q)
-    )
+    if (search) {
+      const q = search.toLowerCase()
+      const match = (
+        c.first_name?.toLowerCase().includes(q) ||
+        c.last_name?.toLowerCase().includes(q) ||
+        c.phone?.includes(q) ||
+        c.closed_reason?.toLowerCase().includes(q)
+      )
+      if (!match) return false
+    }
+
+    // Date filter on close date (updated_at)
+    if (dateBounds) {
+      if (!matchesDateBounds(dateBounds, c.updated_at)) return false
+    }
+
+    return true
   })
 
   return (
     <div className="p-5 max-w-6xl mx-auto">
-      <div className="flex items-center gap-3 mb-5 flex-wrap">
+      <div className="flex items-center gap-3 mb-3 flex-wrap">
         <h1 className="font-bold text-gray-900 text-xl flex-1">Closed Leads</h1>
 
         <div className="relative">
@@ -86,9 +105,34 @@ export default function ClosedLeads() {
         </button>
       </div>
 
+      {/* Date filter row */}
+      <div className="flex items-center gap-3 mb-5 flex-wrap">
+        <span className="text-xs text-gray-500">Filter by closed date:</span>
+        <DateRangeFilter
+          dateRange={dateRange}
+          setDateRange={setDateRange}
+          startDate={startDate}
+          setStartDate={setStartDate}
+          endDate={endDate}
+          setEndDate={setEndDate}
+        />
+        {dateRange && (
+          <button
+            onClick={() => { setDateRange(''); setStartDate(''); setEndDate('') }}
+            className="text-xs text-gray-400 hover:text-gray-600 underline"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
         <div className="px-5 py-3 border-b border-gray-100 bg-gray-50 flex items-center justify-between">
-          <span className="text-sm text-gray-500">{filtered.length} closed leads</span>
+          <span className="text-sm text-gray-500">
+            {dateBounds
+              ? `${filtered.length} of ${candidates.length} closed leads`
+              : `${filtered.length} closed leads`}
+          </span>
         </div>
 
         {loading ? (

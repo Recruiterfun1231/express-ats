@@ -58,7 +58,7 @@ export default function Dashboard() {
 
   const [stats, setStats] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [dateRange, setDateRange] = useState('month')
+  const [dateRange, setDateRange] = useState('')
   const [startDate, setStartDate] = useState(monthStart())
   const [endDate, setEndDate] = useState(today())
   const [filterRecruiter, setFilterRecruiter] = useState('')

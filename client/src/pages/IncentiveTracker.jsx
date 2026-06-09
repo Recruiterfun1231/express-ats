@@ -3,6 +3,7 @@ import { Gift, DollarSign, RefreshCw, CheckCircle, Star } from 'lucide-react'
 import { format } from 'date-fns'
 import api from '../api'
 import { useAuth, useToast } from '../App'
+import DateRangeFilter, { getDateBounds, matchesDateBounds } from '../components/DateRangeFilter'
 
 export default function IncentiveTracker() {
   const { user } = useAuth()
@@ -11,7 +12,12 @@ export default function IncentiveTracker() {
   const [loading, setLoading] = useState(true)
   const [filterRecruiter, setFilterRecruiter] = useState(user?.role === 'recruiter' ? user.username : '')
   const [filterOffice, setFilterOffice] = useState('')
-  const [saving, setSaving] = useState(null) // candidate id being saved
+  const [saving, setSaving] = useState(null)
+
+  // Date filter (applied to placed_date)
+  const [dateRange, setDateRange] = useState('')
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
 
   useEffect(() => { loadCandidates() }, [filterRecruiter, filterOffice])
 
@@ -43,7 +49,6 @@ export default function IncentiveTracker() {
     return d
   }
 
-  // Auto-detect $1: Placed AND placed_date within 7 days of kept date
   const autoQualifies1 = (c) => {
     if (c.status !== 'Placed') return false
     if (!c.placed_date || !c.inperson_datetime) return false
@@ -51,27 +56,19 @@ export default function IncentiveTracker() {
     return days !== null && days <= 7
   }
 
-  // Effective incentive type for a candidate:
-  // incentive_type field overrides auto-detection
-  // null = use auto-detection
   const getIncentiveType = (c) => {
     if (c.status !== 'Placed') return null
     if (c.incentive_type === '$1') return '$1'
     if (c.incentive_type === '$2') return '$2'
     if (c.incentive_type === 'none') return null
-    // Auto-detect if no override
     if (autoQualifies1(c)) return '$1'
     return null
   }
 
   const setIncentiveType = async (candidate, type) => {
-    // Toggle off if clicking the active type
     const current = getIncentiveType(candidate)
     const newType = current === type ? null : type
-
-    // Determine what to store: null means revert to auto-detection
     let storedValue = newType
-    // If reverting to null but auto-detects as $1, store 'none' to explicitly clear
     if (newType === null && autoQualifies1(candidate)) {
       storedValue = 'none'
     }
@@ -86,12 +83,26 @@ export default function IncentiveTracker() {
     setSaving(null)
   }
 
-  const placed = candidates.filter(c => c.status === 'Placed')
+  // Date bounds for filtering placed_date
+  const dateBounds = (dateRange === 'custom' && (!startDate || !endDate))
+    ? null
+    : getDateBounds(dateRange, startDate, endDate)
+
+  // All placed candidates
+  const allPlaced = candidates.filter(c => c.status === 'Placed')
+
+  // Date-filtered placed candidates (for the table)
+  const placed = allPlaced.filter(c => {
+    if (!dateBounds) return true
+    // Filter on placed_date, falling back to updated_at if placed_date is empty
+    return matchesDateBounds(dateBounds, c.placed_date, c.updated_at)
+  })
+
   const dollar1 = placed.filter(c => getIncentiveType(c) === '$1')
   const dollar2 = placed.filter(c => getIncentiveType(c) === '$2')
   const totalIncentive = dollar1.length * 1 + dollar2.length * 2
 
-  // Recruiter breakdown
+  // Recruiter breakdown — based on the date-filtered list
   const byRecruiter = placed.reduce((acc, c) => {
     const key = c.recruiter || 'Unassigned'
     if (!acc[key]) acc[key] = []
@@ -127,6 +138,32 @@ export default function IncentiveTracker() {
         </button>
       </div>
 
+      {/* Date filter — filters placed_date */}
+      <div className="flex items-center gap-3 flex-wrap bg-white rounded-xl border border-gray-200 px-4 py-3 shadow-sm">
+        <span className="text-xs text-gray-500 font-medium">Filter by placed date:</span>
+        <DateRangeFilter
+          dateRange={dateRange}
+          setDateRange={setDateRange}
+          startDate={startDate}
+          setStartDate={setStartDate}
+          endDate={endDate}
+          setEndDate={setEndDate}
+        />
+        {dateRange && (
+          <button
+            onClick={() => { setDateRange(''); setStartDate(''); setEndDate('') }}
+            className="text-xs text-gray-400 hover:text-gray-600 underline"
+          >
+            Clear
+          </button>
+        )}
+        {dateBounds && (
+          <span className="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded ml-auto">
+            Showing {placed.length} of {allPlaced.length} placed
+          </span>
+        )}
+      </div>
+
       {/* Summary Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
@@ -147,7 +184,7 @@ export default function IncentiveTracker() {
         <div className="bg-white rounded-xl border border-gray-200 p-4 shadow-sm">
           <div className="text-sm text-gray-500">Total Placed</div>
           <div className="text-3xl font-bold text-green-500 mt-1">{placed.length}</div>
-          <div className="text-xs text-gray-400 mt-0.5">all statuses</div>
+          <div className="text-xs text-gray-400 mt-0.5">{dateBounds ? 'in selected period' : 'all time'}</div>
         </div>
       </div>
 
@@ -217,7 +254,9 @@ export default function IncentiveTracker() {
         {loading ? (
           <div className="py-12 text-center text-gray-400">Loading...</div>
         ) : placed.length === 0 ? (
-          <div className="py-12 text-center text-gray-400">No placed candidates yet</div>
+          <div className="py-12 text-center text-gray-400">
+            {dateBounds ? 'No placed candidates in this date range' : 'No placed candidates yet'}
+          </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">

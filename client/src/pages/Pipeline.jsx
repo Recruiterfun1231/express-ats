@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react'
-import { Plus, Search, Filter, RefreshCw } from 'lucide-react'
+import { Plus, Search, RefreshCw } from 'lucide-react'
 import api from '../api'
 import CandidateCard from '../components/CandidateCard'
 import CandidateModal from '../components/CandidateModal'
 import QuickAddModal from '../components/QuickAddModal'
+import DateRangeFilter, { getDateBounds, matchesDateBounds } from '../components/DateRangeFilter'
 import { useAuth, useToast } from '../App'
 
 const COLUMNS = [
@@ -25,6 +26,15 @@ export default function Pipeline() {
   const [search, setSearch] = useState('')
   const [filterRecruiter, setFilterRecruiter] = useState(user?.role === 'recruiter' ? user.username : '')
   const [filterOffice, setFilterOffice] = useState('')
+
+  // Date filter
+  const [dateRange, setDateRange] = useState('')
+  const [startDate, setStartDate] = useState('')
+  const [endDate, setEndDate] = useState('')
+  // Which dates to filter on: 'both' | 'entry' | 'touch'
+  const [dateField, setDateField] = useState('both')
+
+  // Drag state
   const [dragging, setDragging] = useState(null)
   const [dragOver, setDragOver] = useState(null)
   const dragItem = useRef(null)
@@ -47,18 +57,47 @@ export default function Pipeline() {
     setLoading(false)
   }
 
+  // Build date bounds from current filter selections
+  const dateBounds = (dateRange === 'custom' && (!startDate || !endDate))
+    ? null
+    : getDateBounds(dateRange, startDate, endDate)
+
   const filtered = candidates.filter(c => {
-    if (!search) return true
-    const q = search.toLowerCase()
-    return (
-      c.first_name?.toLowerCase().includes(q) ||
-      c.last_name?.toLowerCase().includes(q) ||
-      c.phone?.includes(q) ||
-      c.recruiter?.toLowerCase().includes(q)
-    )
+    // Text search
+    if (search) {
+      const q = search.toLowerCase()
+      const matchesSearch = (
+        c.first_name?.toLowerCase().includes(q) ||
+        c.last_name?.toLowerCase().includes(q) ||
+        c.phone?.includes(q) ||
+        c.recruiter?.toLowerCase().includes(q)
+      )
+      if (!matchesSearch) return false
+    }
+
+    // Date filter
+    if (dateBounds) {
+      if (dateField === 'entry') {
+        // Entry date = application_date or created_at
+        if (!matchesDateBounds(dateBounds, c.application_date, c.created_at)) return false
+      } else if (dateField === 'touch') {
+        // Last touch = last_contacted_date or updated_at
+        if (!matchesDateBounds(dateBounds, c.last_contacted_date, c.updated_at)) return false
+      } else {
+        // 'both' — any of the above dates in range
+        if (!matchesDateBounds(dateBounds, c.application_date, c.created_at, c.last_contacted_date, c.updated_at)) return false
+      }
+    }
+
+    return true
   })
 
   const byStatus = (status) => filtered.filter(c => c.status === status)
+
+  // Total visible vs total loaded
+  const showingLabel = dateBounds
+    ? `${filtered.length} of ${candidates.length} visible`
+    : `${candidates.length} total`
 
   // Drag handlers
   const handleDragStart = (e, candidate) => {
@@ -86,7 +125,6 @@ export default function Pipeline() {
       setDragging(null); setDragOver(null); return
     }
 
-    // Optimistic update
     setCandidates(prev => prev.map(c =>
       c.id === candidate.id ? { ...c, status: newStatus, status_changed_at: new Date().toISOString() } : c
     ))
@@ -97,7 +135,6 @@ export default function Pipeline() {
       addToast(`${candidate.first_name} → ${newStatus}`)
     } catch (e) {
       addToast(e.message, 'error')
-      // Revert
       setCandidates(prev => prev.map(c =>
         c.id === candidate.id ? { ...c, status: candidate.status } : c
       ))
@@ -118,58 +155,105 @@ export default function Pipeline() {
   return (
     <div className="flex flex-col h-full">
       {/* Toolbar */}
-      <div className="flex items-center gap-3 px-5 py-3 bg-white border-b border-gray-200 flex-wrap">
-        <h1 className="font-bold text-gray-900 text-lg mr-2">Pipeline</h1>
+      <div className="px-5 py-3 bg-white border-b border-gray-200 space-y-2">
+        {/* Row 1: title, search, recruiter/office, refresh, add */}
+        <div className="flex items-center gap-3 flex-wrap">
+          <h1 className="font-bold text-gray-900 text-lg mr-2">Pipeline</h1>
 
-        {/* Search */}
-        <div className="relative">
-          <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Search..."
-            className="pl-8 pr-3 py-1.5 border border-gray-300 rounded-lg text-sm w-48 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-          />
-        </div>
+          <div className="relative">
+            <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+            <input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search..."
+              className="pl-8 pr-3 py-1.5 border border-gray-300 rounded-lg text-sm w-44 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            />
+          </div>
 
-        {/* Filters */}
-        {user?.role === 'manager' && (
+          {user?.role === 'manager' && (
+            <select
+              value={filterRecruiter}
+              onChange={e => setFilterRecruiter(e.target.value)}
+              className="text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="">All Recruiters</option>
+              {uniqueRecruiters.map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+          )}
+
           <select
-            value={filterRecruiter}
-            onChange={e => setFilterRecruiter(e.target.value)}
+            value={filterOffice}
+            onChange={e => setFilterOffice(e.target.value)}
             className="text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-blue-500"
           >
-            <option value="">All Recruiters</option>
-            {uniqueRecruiters.map(r => <option key={r} value={r}>{r}</option>)}
+            <option value="">All Offices</option>
+            <option value="1511">1511 — St. Charles</option>
+            <option value="1231">1231 — Maryland Heights</option>
+            <option value="1338">1338 — STL Downtown</option>
           </select>
-        )}
 
-        <select
-          value={filterOffice}
-          onChange={e => setFilterOffice(e.target.value)}
-          className="text-sm border border-gray-300 rounded-lg px-2.5 py-1.5 focus:ring-2 focus:ring-blue-500"
-        >
-          <option value="">All Offices</option>
-          <option value="1511">1511 — St. Charles</option>
-          <option value="1231">1231 — Maryland Heights</option>
-          <option value="1338">1338 — STL Downtown</option>
-        </select>
-
-        <button
-          onClick={loadCandidates}
-          className="p-1.5 text-gray-500 hover:bg-gray-100 rounded-lg"
-          title="Refresh"
-        >
-          <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
-        </button>
-
-        <div className="ml-auto">
           <button
-            onClick={() => setShowQuickAdd(true)}
-            className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 shadow-sm"
+            onClick={loadCandidates}
+            className="p-1.5 text-gray-500 hover:bg-gray-100 rounded-lg"
+            title="Refresh"
           >
-            <Plus size={16} /> + Add Lead
+            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
           </button>
+
+          {dateBounds && (
+            <span className="text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded">
+              {showingLabel}
+            </span>
+          )}
+
+          <div className="ml-auto">
+            <button
+              onClick={() => setShowQuickAdd(true)}
+              className="flex items-center gap-1.5 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700 shadow-sm"
+            >
+              <Plus size={16} /> + Add Lead
+            </button>
+          </div>
+        </div>
+
+        {/* Row 2: date filter */}
+        <div className="flex items-center gap-3 flex-wrap">
+          <DateRangeFilter
+            dateRange={dateRange}
+            setDateRange={setDateRange}
+            startDate={startDate}
+            setStartDate={setStartDate}
+            endDate={endDate}
+            setEndDate={setEndDate}
+          />
+          {/* What date field to filter on */}
+          <div className="flex items-center gap-1 text-xs text-gray-500 border border-gray-200 rounded-lg overflow-hidden">
+            {[
+              { val: 'both',  label: 'Entry or Last Touch' },
+              { val: 'entry', label: 'Entry Date' },
+              { val: 'touch', label: 'Last Touch' },
+            ].map(opt => (
+              <button
+                key={opt.val}
+                onClick={() => setDateField(opt.val)}
+                className={`px-2.5 py-1.5 transition-colors ${
+                  dateField === opt.val
+                    ? 'bg-blue-600 text-white font-medium'
+                    : 'text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+          {dateRange && (
+            <button
+              onClick={() => { setDateRange(''); setStartDate(''); setEndDate('') }}
+              className="text-xs text-gray-400 hover:text-gray-600 underline"
+            >
+              Clear filter
+            </button>
+          )}
         </div>
       </div>
 
