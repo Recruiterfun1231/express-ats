@@ -35,6 +35,15 @@ app.use('/api/dashboard', require('./routes/dashboard'))
 app.use('/api/import', require('./routes/import'))
 app.use('/api/arrival', require('./routes/arrival'))
 
+// Temporary DB download — manager only, remove after use
+app.get('/api/admin/download-db', (req, res) => {
+  if (!req.session?.user || req.session.user.role !== 'manager') {
+    return res.status(403).json({ error: 'Manager only' })
+  }
+  const dbFile = process.env.DB_PATH || require('path').join(__dirname, 'ats.db')
+  res.download(dbFile, 'ats-backup.db')
+})
+
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() })
