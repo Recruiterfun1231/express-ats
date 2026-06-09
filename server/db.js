@@ -2,7 +2,10 @@ const Database = require('better-sqlite3')
 const bcrypt = require('bcryptjs')
 const path = require('path')
 
-const db = new Database(path.join(__dirname, 'ats.db'))
+// On Railway: set DB_PATH=/data/ats.db and mount a volume at /data
+// Locally: falls back to server/ats.db as before
+const DB_FILE = process.env.DB_PATH || path.join(__dirname, 'ats.db')
+const db = new Database(DB_FILE)
 
 db.pragma('journal_mode = WAL')
 db.pragma('foreign_keys = ON')
