@@ -5,11 +5,29 @@ const { requireAuth } = require('../middleware/auth')
 
 // GET /api/dashboard/stats
 router.get('/stats', requireAuth, (req, res) => {
-  const { recruiter, office, dateRange } = req.query
+  const { office, dateRange, startDate, endDate } = req.query
+  const isManager = req.session.user.role === 'manager'
 
+  // Non-managers always see only their own data
+  const recruiter = isManager ? (req.query.recruiter || null) : req.session.user.username
+
+  // Build date filter
   let dateFilter = ''
   const now = new Date()
-  if (dateRange === '7d') {
+
+  if (dateRange === 'today') {
+    dateFilter = `AND date(created_at) = date('now')`
+  } else if (dateRange === 'week') {
+    // Start of current week — Monday
+    const day = now.getDay()
+    const diff = day === 0 ? 6 : day - 1
+    const monday = new Date(now)
+    monday.setDate(now.getDate() - diff)
+    monday.setHours(0, 0, 0, 0)
+    dateFilter = `AND created_at >= '${monday.toISOString()}'`
+  } else if (dateRange === 'month') {
+    dateFilter = `AND created_at >= date('now', 'start of month')`
+  } else if (dateRange === '7d') {
     const d = new Date(now); d.setDate(d.getDate() - 7)
     dateFilter = `AND created_at >= '${d.toISOString()}'`
   } else if (dateRange === '30d') {
@@ -18,6 +36,8 @@ router.get('/stats', requireAuth, (req, res) => {
   } else if (dateRange === '90d') {
     const d = new Date(now); d.setDate(d.getDate() - 90)
     dateFilter = `AND created_at >= '${d.toISOString()}'`
+  } else if (dateRange === 'custom' && startDate && endDate) {
+    dateFilter = `AND date(created_at) BETWEEN '${startDate}' AND '${endDate}'`
   }
 
   let baseFilter = `WHERE 1=1 ${dateFilter}`
@@ -25,11 +45,12 @@ router.get('/stats', requireAuth, (req, res) => {
   if (recruiter) { baseFilter += ' AND recruiter = ?'; params.push(recruiter) }
   if (office) { baseFilter += ' AND office = ?'; params.push(office) }
 
-  const total = db.prepare(`SELECT COUNT(*) as cnt FROM candidates ${baseFilter}`).get(...params)
-  const active = db.prepare(`SELECT COUNT(*) as cnt FROM candidates ${baseFilter} AND is_active = 1`).get(...params)
-  const placed = db.prepare(`SELECT COUNT(*) as cnt FROM candidates ${baseFilter} AND status = 'Placed'`).get(...params)
-  const kept = db.prepare(`SELECT COUNT(*) as cnt FROM candidates ${baseFilter} AND status = 'Kept'`).get(...params)
-  const closed = db.prepare(`SELECT COUNT(*) as cnt FROM candidates ${baseFilter} AND is_active = 0`).get(...params)
+  const total   = db.prepare(`SELECT COUNT(*) as cnt FROM candidates ${baseFilter}`).get(...params)
+  const active  = db.prepare(`SELECT COUNT(*) as cnt FROM candidates ${baseFilter} AND is_active = 1`).get(...params)
+  const placed  = db.prepare(`SELECT COUNT(*) as cnt FROM candidates ${baseFilter} AND status = 'Placed'`).get(...params)
+  const kept    = db.prepare(`SELECT COUNT(*) as cnt FROM candidates ${baseFilter} AND status = 'Kept'`).get(...params)
+  const closed  = db.prepare(`SELECT COUNT(*) as cnt FROM candidates ${baseFilter} AND is_active = 0`).get(...params)
+  const scheduled = db.prepare(`SELECT COUNT(*) as cnt FROM candidates ${baseFilter} AND status IN ('Scheduled','Confirmed')`).get(...params)
 
   // By status
   const byStatus = db.prepare(`
@@ -58,45 +79,26 @@ router.get('/stats', requireAuth, (req, res) => {
     SELECT office, COUNT(*) as cnt FROM candidates ${baseFilter} GROUP BY office
   `).all(...params)
 
-  // Daily trend (last 14 days)
+  // Trend — daily, respects the selected date filter
   const trend = db.prepare(`
     SELECT date(created_at) as day, COUNT(*) as cnt
     FROM candidates
-    WHERE created_at >= date('now', '-14 days')
+    WHERE 1=1 ${dateFilter} ${recruiter ? `AND recruiter = '${recruiter}'` : ''} ${office ? `AND office = '${office}'` : ''}
     GROUP BY day ORDER BY day ASC
   `).all()
 
   // Conversion funnel
   const funnel = [
-    { stage: 'New', count: 0 },
-    { stage: 'LMVM', count: 0 },
-    { stage: 'Scheduled', count: 0 },
-    { stage: 'Confirmed', count: 0 },
-    { stage: 'Kept', count: 0 },
-    { stage: 'Placed', count: 0 }
+    { stage: 'New', count: 0 }, { stage: 'LMVM', count: 0 },
+    { stage: 'Scheduled', count: 0 }, { stage: 'Confirmed', count: 0 },
+    { stage: 'Kept', count: 0 }, { stage: 'Placed', count: 0 }
   ]
-  const funnelData = db.prepare(`
-    SELECT status, COUNT(*) as cnt FROM candidates ${baseFilter} GROUP BY status
-  `).all(...params)
-  funnelData.forEach(row => {
-    const found = funnel.find(f => f.stage === row.status)
-    if (found) found.count = row.cnt
-  })
+  db.prepare(`SELECT status, COUNT(*) as cnt FROM candidates ${baseFilter} GROUP BY status`).all(...params)
+    .forEach(row => { const f = funnel.find(f => f.stage === row.status); if (f) f.count = row.cnt })
 
   res.json({
-    summary: {
-      total: total.cnt,
-      active: active.cnt,
-      placed: placed.cnt,
-      kept: kept.cnt,
-      closed: closed.cnt
-    },
-    byStatus,
-    byRecruiter,
-    bySource,
-    byOffice,
-    trend,
-    funnel
+    summary: { total: total.cnt, active: active.cnt, placed: placed.cnt, kept: kept.cnt, closed: closed.cnt, scheduled: scheduled.cnt },
+    byStatus, byRecruiter, bySource, byOffice, trend, funnel
   })
 })
 
